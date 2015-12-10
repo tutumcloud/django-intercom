@@ -2,12 +2,12 @@ import logging
 import hashlib
 import hmac
 import json
-from django.template import Library, Node
+from django.template import Library
 from django.conf import settings
-from django.utils.importlib import import_module
 
 register = Library()
 log = logging.getLogger(__name__)
+
 
 INTERCOM_APPID = getattr(settings, 'INTERCOM_APPID', None)
 INTERCOM_SECURE_KEY = getattr(settings, 'INTERCOM_SECURE_KEY', None)
@@ -19,6 +19,8 @@ INTERCOM_CUSTOM_DATA_CLASSES = getattr(settings, 'INTERCOM_CUSTOM_DATA_CLASSES',
 INTERCOM_COMPANY_DATA_CLASS = getattr(settings, 'INTERCOM_COMPANY_DATA_CLASS', None)
 INTERCOM_DISABLED = getattr(settings, 'INTERCOM_DISABLED', False)
 INTERCOM_INCLUDE_USERID = getattr(settings, 'INTERCOM_INCLUDE_USERID', True)
+INTERCOM_CUSTOM_INBOX_CONDITIONS_CLASSES = getattr(settings, 'INTERCOM_CUSTOM_INBOX_CONDITIONS_CLASSES', None)
+
 
 def my_import(name):
     """ dynamic importing """
@@ -26,6 +28,7 @@ def my_import(name):
     mod = __import__(module, fromlist=[attr])
     klass = getattr(mod, attr)
     return klass()
+
 
 @register.inclusion_tag('intercom/intercom_tag.html', takes_context=True)
 def intercom_tag(context):
@@ -40,7 +43,6 @@ def intercom_tag(context):
         You could do this without using a template tag, but I felt this was a
         little cleaner then doing everything in the template.
     """
-
     # Short-circuit if the tag is disabled.
     if INTERCOM_DISABLED is True:
         return {"INTERCOM_IS_VALID" : False}
@@ -120,13 +122,30 @@ def intercom_tag(context):
             user_hash = hmac.new(INTERCOM_SECURE_KEY, hmac_value,
                                  digestmod=hashlib.sha256).hexdigest()
 
+        enable_inbox = INTERCOM_ENABLE_INBOX
+        if INTERCOM_ENABLE_INBOX and INTERCOM_CUSTOM_INBOX_CONDITIONS_CLASSES is not None:
+            for condition_class in INTERCOM_CUSTOM_INBOX_CONDITIONS_CLASSES:
+                try:
+                    cic_class = my_import(condition_class)
+                    # check make sure the class has a custom_data method.
+                    if cic_class and hasattr(cic_class, 'custom_inbox_condition'):
+                        # call custom_data method and update the custom_data dict
+                        passes_check = cic_class.custom_inbox_condition(request.user)
+                        if not passes_check:
+                            enable_inbox = False
+                            break
+                    else:
+                        log.warning("%s doesn't have a suuport condition method, skipping." % cic_class)
+                except ImportError, e:
+                    log.warning("%s couldn't be imported, there was an error during import. skipping. %s" % (condition_class,e) )
+
         return {"INTERCOM_IS_VALID": True,
                 "intercom_appid": INTERCOM_APPID,
                 "email_address": email,
                 "user_id": user_id,
                 "user_created": user_created,
                 "name": name,
-                "enable_inbox": INTERCOM_ENABLE_INBOX,
+                "enable_inbox": enable_inbox,
                 "use_counter": use_counter,
                 "css_selector": INTERCOM_INBOX_CSS_SELECTOR,
                 "custom_data": custom_data,
